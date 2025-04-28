@@ -14,10 +14,8 @@ public sealed class DnsUpdaterService(ILogger<DnsUpdaterService> logger, IHttpCl
     private readonly ILogger<DnsUpdaterService> _logger = logger;
     private readonly IHttpClientFactory _httpFactory = httpFactory;
     private readonly NetcupApiClient _api = api;
-    private readonly string _targetDomain = Environment.GetEnvironmentVariable("TARGET_DOMAIN") ??
-                                            throw new InvalidOperationException("TARGET_DOMAIN is required");
-    private readonly string _zoneDomain = Environment.GetEnvironmentVariable("ZONE_DOMAIN") ??
-                                            throw new InvalidOperationException("ZONE_DOMAIN is required");
+    private readonly string _netcupDomain = Environment.GetEnvironmentVariable("NETCUP_DOMAIN_NAME") ??
+                                            throw new InvalidOperationException("NETCUP_DOMAIN_NAME is required");
     private readonly string[] _hosts = (Environment.GetEnvironmentVariable("ZONE_HOSTS") ?? "@")
                                             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
@@ -36,9 +34,9 @@ public sealed class DnsUpdaterService(ILogger<DnsUpdaterService> logger, IHttpCl
             try
             {
                 var currentWanIp = await GetWanIpAsync(stoppingToken);
-                var resolvedIp = await ResolveDomainAsync(_targetDomain, stoppingToken);
+                var resolvedIp = await ResolveDomainAsync(_netcupDomain, stoppingToken);
 
-                _logger.LogDebug("WAN IP = {Wan}, DNS resolves {Domain} -> {Resolved}", currentWanIp, _targetDomain, resolvedIp);
+                _logger.LogDebug("WAN IP = {Wan}, DNS resolves {Domain} -> {Resolved}", currentWanIp, _netcupDomain, resolvedIp);
 
                 if (currentWanIp is null)
                 {
@@ -48,7 +46,7 @@ public sealed class DnsUpdaterService(ILogger<DnsUpdaterService> logger, IHttpCl
                 {
                     _logger.LogInformation("Detected IP mismatch (WAN {Wan} / DNS {Dns}) → updating...", currentWanIp, resolvedIp ?? "<none>");
 
-                    await _api.UpdateARecordsAsync(_zoneDomain, _hosts, currentWanIp, _ttl, stoppingToken);
+                    await _api.UpdateARecordsAsync(_netcupDomain, _hosts, currentWanIp, _ttl, stoppingToken);
                 }
             }
             catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
