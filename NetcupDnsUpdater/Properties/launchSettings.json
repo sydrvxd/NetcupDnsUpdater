@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "NetcupDnsUpdater": {
+      "commandName": "Project"
+    },
+    "Container (Dockerfile)": {
+      "commandName": "Docker"
+    }
+  }
+}
