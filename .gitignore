@@ -361,3 +361,7 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+/NetcupApiClientTester/NetcupApiClientTester.csproj
+/NetcupDnsUpdater.Integration/NetcupDnsUpdater.Integration.csproj
+/NetcupApiClientTester/Program.cs
+/NetcupDnsUpdater.Integration/NetcupApiClientIntegrationTests.cs
