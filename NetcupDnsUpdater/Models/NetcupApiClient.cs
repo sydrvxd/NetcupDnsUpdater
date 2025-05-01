@@ -1,140 +1,151 @@
-﻿using System.Net.Http.Json;
+﻿using Microsoft.Extensions.Logging;
+using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Microsoft.Extensions.Logging;
 
 namespace NetcupDnsUpdater.Models;
 
-public sealed class NetcupApiClient(IHttpClientFactory factory, ILogger<NetcupApiClient> logger)
+public sealed class NetcupApiClient(IHttpClientFactory f, ILogger<NetcupApiClient> log)
 {
-    private readonly ILogger<NetcupApiClient> _logger = logger;
-    private readonly HttpClient _http = factory.CreateClient();
+    private readonly ILogger<NetcupApiClient> _log = log;
+    private readonly HttpClient _http = f.CreateClient();
 
-    // credentials -----------------------------------------------------------
-    private readonly string _customerId = Environment.GetEnvironmentVariable("NETCUP_CUSTOMER_ID")
-        ?? throw new InvalidOperationException("NETCUP_CUSTOMER_ID is required");
-    private readonly string _apiKey = Environment.GetEnvironmentVariable("NETCUP_API_KEY")
-        ?? throw new InvalidOperationException("NETCUP_API_KEY is required");
-    private readonly string _apiPw = Environment.GetEnvironmentVariable("NETCUP_API_PASSWORD")
-        ?? throw new InvalidOperationException("NETCUP_API_PASSWORD is required");
+    private readonly string _cust = Env("NETCUP_CUSTOMER_ID");
+    private readonly string _key = Env("NETCUP_API_KEY");
+    private readonly string _pwd = Env("NETCUP_API_PASSWORD");
 
-    private string? _sessionId;
-    private DateTimeOffset _sessionValidUntil;
+    private string? _sid;
+    private DateTimeOffset _validUntil;
 
-    private const string Endpoint = "https://ccp.netcup.net/run/webservice/servers/endpoint.php?JSON";
+    private const string EP = "https://ccp.netcup.net/run/webservice/servers/endpoint.php?JSON";
 
-    private static readonly JsonSerializerOptions JsonOpts = new()
+    private static readonly JsonSerializerOptions JOpts = new()
     {
         PropertyNameCaseInsensitive = true,
         NumberHandling = JsonNumberHandling.AllowReadingFromString
     };
 
-    // public surface --------------------------------------------------------
     public async Task EnsureLoggedInAsync(CancellationToken ct)
     {
-        if (_sessionId is not null && _sessionValidUntil > DateTimeOffset.UtcNow) return;
-        await LoginAsync(ct);
+        if (_sid is null || _validUntil < DateTimeOffset.UtcNow)
+            await LoginAsync(ct);
     }
 
-    public async Task UpdateARecordsAsync(string zoneDomain, IEnumerable<string> hostnames, string newIp, int ttl, CancellationToken ct)
+    public async Task UpdateARecordsAsync(string zone, IEnumerable<string> hosts, string ip, CancellationToken ct)
     {
         await EnsureLoggedInAsync(ct);
 
-        // 1) fetch existing records ----------------------------------------
-        var infoDoc = await SendAsync("infoDnsRecords", new
-        {
-            domainname = zoneDomain
-        }, ct);
+        var info = await CallAsync("infoDnsRecords", new { domainname = zone }, ct);
+        var records = info.GetProperty("responsedata").GetProperty("dnsrecords").EnumerateArray();
 
-        var records = infoDoc.RootElement.GetProperty("responsedata")
-                                         .GetProperty("dnsrecords")
-                                         .EnumerateArray();
+        var wanted = hosts.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        static int JInt(JsonElement el) => el.ValueKind == JsonValueKind.Number
-            ? el.GetInt32()
-            : int.TryParse(el.GetString(), out var v) ? v : throw new InvalidOperationException("Numeric expected");
-
-        var wanted = hostnames.Select(h => h.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        var updateSet = records
+        var set = records
             .Where(r => wanted.Contains(r.GetProperty("hostname").GetString()!))
-            .Where(r => string.Equals(r.GetProperty("type").GetString(), "A", StringComparison.OrdinalIgnoreCase))
+            .Where(r => r.GetProperty("type").GetString() == "A")
             .Select(r => new
             {
-                id = JInt(r.GetProperty("id")),
-                hostname = r.GetProperty("hostname").GetString(),
+                id = r.GetProperty("id").GetString()!,
+                hostname = r.GetProperty("hostname").GetString()!,
                 type = "A",
-                destination = newIp,
-                ttl
+                destination = ip,
+                priority = r.TryGetProperty("priority", out var p) ? p.GetString()! : null,
+                deleterecord = false,
             })
             .ToArray();
 
-        if (updateSet.Length == 0)
+        if (set.Length == 0)
         {
-            _logger.LogWarning("No matching A-records found for hosts {hosts}", string.Join(',', wanted));
+            _log.LogWarning("No matching A‑records for {hosts}", string.Join(',', hosts));
             return;
         }
 
-        // 2) push update ----------------------------------------------------
-        await SendAsync("updateDnsRecords", new
-        {
-            domainname = zoneDomain,
-            dnsrecordset = updateSet
-        }, ct);
-
-        _logger.LogInformation("Updated {n} record(s) → {ip}", updateSet.Length, newIp);
+        await CallAsync("updateDnsRecords", new { domainname = zone, dnsrecordset = set }, ct);
+        _log.LogInformation("Updated {n} record(s) → {ip}", set.Length, ip);
     }
 
-    // helpers ---------------------------------------------------------------
+    // ─── internals ─────────────────────────────────────────────────────────
     private async Task LoginAsync(CancellationToken ct)
     {
-        var doc = await SendAsync("login", new
-        {
-            customernumber = _customerId,
-            apipassword = _apiPw,
-            apikey = _apiKey
-        }, ct, includeSession: false); // no session yet
-
-        _sessionId = doc.RootElement.GetProperty("responsedata").GetProperty("apisessionid").GetString();
-        _sessionValidUntil = DateTimeOffset.UtcNow.AddMinutes(14);
-        _logger.LogInformation("Logged in – session valid until {until:u}", _sessionValidUntil);
+        var doc = await CallAsync("login", new { customernumber = _cust, apikey = _key, apipassword = _pwd }, ct, false);
+        _sid = doc.GetProperty("responsedata").GetProperty("apisessionid").GetString();
+        _validUntil = DateTimeOffset.UtcNow.AddSeconds(10);
+        _log.LogInformation("Logged in – session valid until {u:u}", _validUntil);
     }
 
-    private async Task<JsonDocument> SendAsync(string action, object param, CancellationToken ct, bool includeSession = true)
+    private async Task<JsonElement> CallAsync(string action, object param, CancellationToken ct, bool withSession = true)
     {
-        // merge auth into param object (anonymous type merge via Expando)
-        var auth = new
-        {
-            customernumber = _customerId,
-            apikey = _apiKey,
-            apisessionid = includeSession ? _sessionId : null
-        };
+        _log.LogInformation("Starting Netcup Post with action '{action}' and parameters:\n{parameters}\n", action, 
+            JsonSerializer.Serialize(param, new JsonSerializerOptions 
+            { 
+                WriteIndented = true,
+                PropertyNameCaseInsensitive = true,
+                NumberHandling = JsonNumberHandling.AllowReadingFromString
+            }));
 
-        var fullParam = MergeObjects(param, auth);
+        // merge auth fields into param
+        object mergedParam = withSession
+            ? Merge(param, new { customernumber = _cust, apikey = _key, apisessionid = _sid })
+            : param;
 
-        var payload = new { action, param = fullParam };
+        var payload = new { action, param = mergedParam };
 
-        using var resp = await _http.PostAsJsonAsync(Endpoint, payload, JsonOpts, ct);
+        // initial request
+        using var resp = await _http.PostAsJsonAsync(EP, payload, JOpts, ct);
         resp.EnsureSuccessStatusCode();
+        await using var s = await resp.Content.ReadAsStreamAsync(ct);
+        using var doc = await JsonDocument.ParseAsync(s, cancellationToken: ct);
 
-        await using var stream = await resp.Content.ReadAsStreamAsync(ct);
-        var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+        var root = doc.RootElement;
+        var status = root.GetProperty("status").GetString();
+        var codeEl = root.GetProperty("statuscode");
+        var code = codeEl.ValueKind == JsonValueKind.Number
+            ? codeEl.GetInt32()
+            : int.TryParse(codeEl.GetString(), out var v) ? v : -1;
 
-        if (!string.Equals(doc.RootElement.GetProperty("status").GetString(), "success", StringComparison.OrdinalIgnoreCase))
+        // if session invalid, re-login and retry once
+        if (!string.Equals(status, "success", StringComparison.OrdinalIgnoreCase) && code == 4001)
         {
-            var msg = doc.RootElement.TryGetProperty("longmessage", out var lm) ? lm.GetString() : "Unknown";
-            throw new InvalidOperationException($"Netcup API error: {msg}");
+            _sid = null;
+            _log.LogWarning("Session invalid (4001), re-authenticating...");
+            await EnsureLoggedInAsync(ct);
+
+            using var retryResp = await _http.PostAsJsonAsync(EP, payload, JOpts, ct);
+            retryResp.EnsureSuccessStatusCode();
+            await using var s2 = await retryResp.Content.ReadAsStreamAsync(ct);
+            using var doc2 = await JsonDocument.ParseAsync(s2, cancellationToken: ct);
+            var root2 = doc2.RootElement;
+            if (root2.GetProperty("status").GetString()?.Equals("success", StringComparison.OrdinalIgnoreCase) == false)
+            {
+                var msg2 = root2.TryGetProperty("longmessage", out var lm2) ? lm2.GetString() : "<unknown>";
+                throw new InvalidOperationException($"Netcup API error after retry: {msg2}");
+            }
+            return root2.Clone();
         }
 
-        return doc;
+        // handle other errors
+        if (!string.Equals(status, "success", StringComparison.OrdinalIgnoreCase))
+        {
+            var msg = root.TryGetProperty("longmessage", out var lm) ? lm.GetString() : "<unknown>";
+            throw new InvalidOperationException($"Netcup API error (code {code}): {msg}");
+        }
+
+        // success
+        return root.Clone();
     }
 
-    // quick & dirty anonymous‑object merge ----------------------------------
-    private static object MergeObjects(object a, object b)
+    // merge two anonymous objects into one
+    private static Dictionary<string, object?> Merge(object a, object b)
     {
         var dict = new Dictionary<string, object?>();
         foreach (var p in a.GetType().GetProperties()) dict[p.Name] = p.GetValue(a);
         foreach (var p in b.GetType().GetProperties()) dict[p.Name] = p.GetValue(b);
         return dict;
     }
+
+    private static string Env(string k) => Environment.GetEnvironmentVariable(k)
+        ?? throw new InvalidOperationException($"{k} is required");
 }
+
+
+

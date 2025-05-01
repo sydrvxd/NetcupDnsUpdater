@@ -1,88 +1,82 @@
-﻿using System.Net;
-using System.Net.NetworkInformation;
-using System.Net.Sockets;
-using System.Text;
-using Microsoft.Extensions.Hosting;
+﻿using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NetcupDnsUpdater.Models;
+using System.Net;
+using System.Net.Sockets;
 
 namespace NetcupDnsUpdater.Services;
 
-public sealed class DnsUpdaterService(ILogger<DnsUpdaterService> logger, IHttpClientFactory httpFactory, NetcupApiClient api)
-    : BackgroundService
+public sealed class DnsUpdaterService(ILogger<DnsUpdaterService> logger,
+                                       IHttpClientFactory httpFactory,
+                                       NetcupApiClient api) : BackgroundService
 {
-    private readonly ILogger<DnsUpdaterService> _logger = logger;
-    private readonly IHttpClientFactory _httpFactory = httpFactory;
+    private readonly ILogger<DnsUpdaterService> _log = logger;
+    private readonly IHttpClientFactory _http = httpFactory;
     private readonly NetcupApiClient _api = api;
-    private readonly string _netcupDomain = Environment.GetEnvironmentVariable("NETCUP_DOMAIN_NAME") ??
-                                            throw new InvalidOperationException("NETCUP_DOMAIN_NAME is required");
+
+    private readonly string _domain = Env("NETCUP_DOMAIN_NAME");
     private readonly string[] _hosts = (Environment.GetEnvironmentVariable("ZONE_HOSTS") ?? "@")
-                                            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
     private readonly TimeSpan _interval = TimeSpan.FromSeconds(int.TryParse(Environment.GetEnvironmentVariable("INTERVAL_SECONDS"), out var s) && s > 0 ? s : 60);
-    private readonly int _ttl = int.TryParse(Environment.GetEnvironmentVariable("RECORD_TTL"), out var t) && t > 0 ? t : 300;
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    protected override async Task ExecuteAsync(CancellationToken ct)
     {
-        _logger.LogInformation("Netcup DNS updater started; interval {Interval} sec", _interval.TotalSeconds);
+        _log.LogInformation("Netcup DNS updater started; interval {s}s", _interval.TotalSeconds);
 
-        // Authenticate once – the session expires after 15 minutes; we re‑login on failure automatically inside client
-        await _api.EnsureLoggedInAsync(stoppingToken);
-
-        while (!stoppingToken.IsCancellationRequested)
+        while (!ct.IsCancellationRequested)
         {
             try
             {
-                var currentWanIp = await GetWanIpAsync(stoppingToken);
-                var resolvedIp = await ResolveDomainAsync(_netcupDomain, stoppingToken);
+                await _api.EnsureLoggedInAsync(ct);
 
-                _logger.LogDebug("WAN IP = {Wan}, DNS resolves {Domain} -> {Resolved}", currentWanIp, _netcupDomain, resolvedIp);
+                var wan = await GetWanIpAsync(ct);
+                var dns = await ResolveAsync(_domain, ct);
 
-                if (currentWanIp is null)
+                if (wan is null)
+                    _log.LogWarning("WAN IP unknown – skipping");
+                else if (!string.Equals(wan, dns, StringComparison.Ordinal))
                 {
-                    _logger.LogWarning("Could not determine WAN IP – skipping cycle");
-                }
-                else if (!currentWanIp.Equals(resolvedIp))
-                {
-                    _logger.LogInformation("Detected IP mismatch (WAN {Wan} / DNS {Dns}) → updating...", currentWanIp, resolvedIp ?? "<none>");
-
-                    await _api.UpdateARecordsAsync(_netcupDomain, _hosts, currentWanIp, _ttl, stoppingToken);
+                    _log.LogInformation("Mismatch WAN {wan} / DNS {dns} – updating", wan, dns ?? "<none>");
+                    await _api.UpdateARecordsAsync(_domain, _hosts, wan, ct);
                 }
             }
-            catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
+            catch (Exception ex) when (!ct.IsCancellationRequested)
             {
-                _logger.LogError(ex, "Cycle failed: {Message}", ex.Message);
+                _log.LogError(ex, "Cycle failed – retry in {s}s", _interval.TotalSeconds);
             }
 
-            await Task.Delay(_interval, stoppingToken);
+            await Task.Delay(_interval, ct);
         }
     }
 
+    private static string Env(string key) => Environment.GetEnvironmentVariable(key)
+        ?? throw new InvalidOperationException($"{key} is required");
+
     private async Task<string?> GetWanIpAsync(CancellationToken ct)
     {
-        using var http = _httpFactory.CreateClient();
-        http.Timeout = TimeSpan.FromSeconds(10);
         try
         {
+            using var http = _http.CreateClient();
+            http.Timeout = TimeSpan.FromSeconds(10);
             return await http.GetStringAsync("https://api.ipify.org", ct);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to query WAN IP");
+            _log.LogWarning(ex, "WAN lookup failed");
             return null;
         }
     }
 
-    private async Task<string?> ResolveDomainAsync(string domain, CancellationToken ct)
+    private static async Task<string?> ResolveAsync(string domain, CancellationToken ct)
     {
         try
         {
-            var addresses = await Dns.GetHostAddressesAsync(domain, ct);
-            return addresses.FirstOrDefault(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)?.ToString();
+            var addrs = await Dns.GetHostAddressesAsync(domain, ct);
+            return addrs.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork)?.ToString();
         }
-        catch (SocketException ex)
+        catch (SocketException)
         {
-            _logger.LogWarning(ex, "DNS resolution failed for {Domain}", domain);
             return null;
         }
     }

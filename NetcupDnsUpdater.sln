@@ -1,9 +1,15 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
-VisualStudioVersion = 17.13.35931.197 d17.13
+VisualStudioVersion = 17.13.35931.197
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NetcupDnsUpdater", "NetcupDnsUpdater\NetcupDnsUpdater.csproj", "{F5CB3924-C189-4B12-8595-44F67273913F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NetcupDnsUpdater.Integration", "NetcupDnsUpdater.Integration\NetcupDnsUpdater.Integration.csproj", "{7AF042C0-CCD2-43DE-844B-55C1D904F637}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Tests", "Tests", "{02EA681E-C7D8-13C7-8484-4AC65E1B71E8}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NetcupApiClientTester", "NetcupApiClientTester\NetcupApiClientTester.csproj", "{8940C50C-E902-425B-8B08-A97C4180031B}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -15,9 +21,21 @@ Global
 		{F5CB3924-C189-4B12-8595-44F67273913F}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{F5CB3924-C189-4B12-8595-44F67273913F}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{F5CB3924-C189-4B12-8595-44F67273913F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7AF042C0-CCD2-43DE-844B-55C1D904F637}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7AF042C0-CCD2-43DE-844B-55C1D904F637}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7AF042C0-CCD2-43DE-844B-55C1D904F637}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7AF042C0-CCD2-43DE-844B-55C1D904F637}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8940C50C-E902-425B-8B08-A97C4180031B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8940C50C-E902-425B-8B08-A97C4180031B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8940C50C-E902-425B-8B08-A97C4180031B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8940C50C-E902-425B-8B08-A97C4180031B}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{7AF042C0-CCD2-43DE-844B-55C1D904F637} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
+		{8940C50C-E902-425B-8B08-A97C4180031B} = {02EA681E-C7D8-13C7-8484-4AC65E1B71E8}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {2FB8F398-C837-4F62-82E3-EF838281A2B0}
