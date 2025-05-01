@@ -69,33 +69,42 @@ public sealed class NetcupApiClient(IHttpClientFactory f, ILogger<NetcupApiClien
         // 3) Filter to the A-records you care about
         var wanted = new HashSet<string>(hosts, StringComparer.OrdinalIgnoreCase);
         var updates = recordsElement
-            .EnumerateArray()
-            .Where(r => wanted.Contains(r.GetProperty("hostname").GetString()!))
-            .Where(r => r.GetProperty("type").GetString() == "A")
-            .Select(r =>
-            {
-                // Safely pull optional properties
-                r.TryGetProperty("id", out var idProp);
-                r.TryGetProperty("hostname", out var hostProp);
-                r.TryGetProperty("priority", out var priProp);
+        .EnumerateArray()
+        // match only wanted hostnames
+        .Where(r => wanted.Contains(r.GetProperty("hostname").GetString()!))
+        // only A-records
+        .Where(r => r.GetProperty("type").GetString() == "A")
+        // **new**: only if the existing destination differs
+        .Where(r => !string.Equals(
+            r.GetProperty("destination").GetString(),
+            ip,
+            StringComparison.Ordinal))
+        .Select(r =>
+        {
+            r.TryGetProperty("id", out var idProp);
+            r.TryGetProperty("hostname", out var hostProp);
+            r.TryGetProperty("priority", out var priProp);
 
-                return new
-                {
-                    id = idProp.GetString()!,
-                    hostname = hostProp.GetString()!,
-                    type = "A",
-                    destination = ip,
-                    priority = priProp.ValueKind == JsonValueKind.Null
-                                     ? null
-                                     : priProp.GetString(),
-                    deleterecord = false
-                };
-            })
-            .ToArray();
+            return new
+            {
+                id = idProp.GetString()!,
+                hostname = hostProp.GetString()!,
+                type = "A",
+                destination = ip,
+                priority = priProp.ValueKind == JsonValueKind.Null
+                                 ? null
+                                 : priProp.GetString(),
+                deleterecord = false
+            };
+        })
+        .ToArray();
 
         if (updates.Length == 0)
         {
-            _log.LogWarning("No matching A-records for {Hosts}", string.Join(',', hosts));
+            _log.LogWarning(
+                "No A-records to update for {Hosts} (all already at {Ip})",
+                string.Join(',', hosts),
+                ip);
             return;
         }
 
@@ -126,13 +135,13 @@ public sealed class NetcupApiClient(IHttpClientFactory f, ILogger<NetcupApiClien
 
     private async Task<JsonElement> CallAsync(string action, object param, CancellationToken ct, bool withSession = true)
     {
-        _log.LogInformation("Starting Netcup Post with action '{action}' and parameters:\n{parameters}\n", action, 
-            JsonSerializer.Serialize(param, new JsonSerializerOptions 
-            { 
-                WriteIndented = true,
-                PropertyNameCaseInsensitive = true,
-                NumberHandling = JsonNumberHandling.AllowReadingFromString
-            }));
+        //_log.LogInformation("Starting Netcup Post with action '{action}' and parameters:\n{parameters}\n", action, 
+        //    JsonSerializer.Serialize(param, new JsonSerializerOptions 
+        //    { 
+        //        WriteIndented = true,
+        //        PropertyNameCaseInsensitive = true,
+        //        NumberHandling = JsonNumberHandling.AllowReadingFromString
+        //    }));
 
         // merge auth fields into param
         object mergedParam = withSession

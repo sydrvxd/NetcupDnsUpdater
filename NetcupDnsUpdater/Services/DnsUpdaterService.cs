@@ -28,8 +28,6 @@ public sealed class DnsUpdaterService(ILogger<DnsUpdaterService> logger,
         {
             try
             {
-                await _api.EnsureLoggedInAsync(ct);
-
                 var wan = await GetWanIpAsync(ct);
                 var dns = await ResolveAsync(_domain, ct);
 
@@ -38,6 +36,7 @@ public sealed class DnsUpdaterService(ILogger<DnsUpdaterService> logger,
                 else if (!string.Equals(wan, dns, StringComparison.Ordinal))
                 {
                     _log.LogInformation("Mismatch WAN {wan} / DNS {dns} – updating", wan, dns ?? "<none>");
+                    await _api.EnsureLoggedInAsync(ct);
                     await _api.UpdateARecordsAsync(_domain, _hosts, wan, ct);
                 }
             }
@@ -58,7 +57,7 @@ public sealed class DnsUpdaterService(ILogger<DnsUpdaterService> logger,
         try
         {
             using var http = _http.CreateClient();
-            http.Timeout = TimeSpan.FromSeconds(10);
+            http.Timeout = TimeSpan.FromSeconds(20);
             return await http.GetStringAsync("https://api.ipify.org", ct);
         }
         catch (Exception ex)
