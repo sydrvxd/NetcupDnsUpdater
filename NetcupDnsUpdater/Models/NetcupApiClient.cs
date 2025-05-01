@@ -31,38 +31,89 @@ public sealed class NetcupApiClient(IHttpClientFactory f, ILogger<NetcupApiClien
             await LoginAsync(ct);
     }
 
+    public record DnsRecordDto(
+        string Id,
+        string Hostname,
+        string Type,
+        string? Priority,
+        string Destination,
+        bool DeleteRecord
+    );
+
     public async Task UpdateARecordsAsync(string zone, IEnumerable<string> hosts, string ip, CancellationToken ct)
     {
         await EnsureLoggedInAsync(ct);
 
+        // 1) Fetch the raw info payload
         var info = await CallAsync("infoDnsRecords", new { domainname = zone }, ct);
-        var records = info.GetProperty("responsedata").GetProperty("dnsrecords").EnumerateArray();
+        var respData = info.GetProperty("responsedata");
 
-        var wanted = hosts.ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        var set = records
-            .Where(r => wanted.Contains(r.GetProperty("hostname").GetString()!))
-            .Where(r => r.GetProperty("type").GetString() == "A")
-            .Select(r => new
-            {
-                id = r.GetProperty("id").GetString()!,
-                hostname = r.GetProperty("hostname").GetString()!,
-                type = "A",
-                destination = ip,
-                priority = r.TryGetProperty("priority", out var p) ? p.GetString()! : null,
-                deleterecord = false,
-            })
-            .ToArray();
-
-        if (set.Length == 0)
+        // 2) Drill into the right property depending on the JSON shape
+        JsonElement recordsElement;
+        if (respData
+            .TryGetProperty("dnsrecordset", out var recordSetObj) &&
+            recordSetObj.TryGetProperty("dnsrecords", out recordsElement))
         {
-            _log.LogWarning("No matching A‑records for {hosts}", string.Join(',', hosts));
+            // New shape: responsedata.dnsrecordset.dnsrecords
+        }
+        else if (respData.TryGetProperty("dnsrecords", out recordsElement))
+        {
+            // Old shape: responsedata.dnsrecords
+        }
+        else
+        {
+            _log.LogError("Unexpected JSON shape from infoDnsRecords: no dnsrecords found for zone {Zone}", zone);
             return;
         }
 
-        await CallAsync("updateDnsRecords", new { domainname = zone, dnsrecordset = set }, ct);
-        _log.LogInformation("Updated {n} record(s) → {ip}", set.Length, ip);
+        // 3) Filter to the A-records you care about
+        var wanted = new HashSet<string>(hosts, StringComparer.OrdinalIgnoreCase);
+        var updates = recordsElement
+            .EnumerateArray()
+            .Where(r => wanted.Contains(r.GetProperty("hostname").GetString()!))
+            .Where(r => r.GetProperty("type").GetString() == "A")
+            .Select(r =>
+            {
+                // Safely pull optional properties
+                r.TryGetProperty("id", out var idProp);
+                r.TryGetProperty("hostname", out var hostProp);
+                r.TryGetProperty("priority", out var priProp);
+
+                return new
+                {
+                    id = idProp.GetString()!,
+                    hostname = hostProp.GetString()!,
+                    type = "A",
+                    destination = ip,
+                    priority = priProp.ValueKind == JsonValueKind.Null
+                                     ? null
+                                     : priProp.GetString(),
+                    deleterecord = false
+                };
+            })
+            .ToArray();
+
+        if (updates.Length == 0)
+        {
+            _log.LogWarning("No matching A-records for {Hosts}", string.Join(',', hosts));
+            return;
+        }
+
+        // 4) Wrap in the new payload shape and send the update
+        var payload = new
+        {
+            domainname = zone,
+            dnsrecordset = new
+            {
+                dnsrecords = updates
+            }
+        };
+
+        await CallAsync("updateDnsRecords", payload, ct);
+        _log.LogInformation("Updated {Count} A-record(s) to {Ip}", updates.Length, ip);
     }
+
+
 
     // ─── internals ─────────────────────────────────────────────────────────
     private async Task LoginAsync(CancellationToken ct)
